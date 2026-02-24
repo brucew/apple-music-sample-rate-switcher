@@ -280,6 +280,19 @@ final class SampleRateSwitcher {
     private var isPausedForSwitch: Bool = false
     private var pendingResumeTask: Task<Void, Never>?
     private var lastResumeTime: CFAbsoluteTime = 0
+    private var trackRateCache: [String: Int] = [:] // Cache of trackID -> sample rate
+    
+    // Pre-compiled AppleScript for faster execution (~16ms vs ~46ms per call)
+    private let pauseScript: NSAppleScript? = {
+        let script = NSAppleScript(source: "tell application \"Music\" to pause")
+        script?.compileAndReturnError(nil)
+        return script
+    }()
+    private let playScript: NSAppleScript? = {
+        let script = NSAppleScript(source: "tell application \"Music\" to play")
+        script?.compileAndReturnError(nil)
+        return script
+    }()
 
     init(deviceID: AudioDeviceID, pauseDuringSwitch: Bool = false) {
         self.targetDeviceID = deviceID
@@ -370,9 +383,24 @@ final class SampleRateSwitcher {
                 
                 // If pause-during-switch is enabled, pause immediately
                 if pauseDuringSwitch {
-                    pausePlayback()
-                    isPausedForSwitch = true
-                    log("Paused playback for sample rate detection...")
+                    // Check cache first — if we've seen this track before, switch instantly
+                    if let cachedRate = trackRateCache[trackID] {
+                        let currentRate = nominalSampleRate(for: targetDeviceID) ?? 0
+                        if Double(cachedRate) != currentRate {
+                            pausePlayback()
+                            isPausedForSwitch = true
+                            log("Paused playback for cached rate switch...")
+                            Task {
+                                await switchToRate(cachedRate, startTime: now, source: "Cache")
+                            }
+                        } else {
+                            log("DAC already at cached rate \(cachedRate) Hz — no pause needed")
+                        }
+                    } else {
+                        pausePlayback()
+                        isPausedForSwitch = true
+                        log("Paused playback for sample rate detection...")
+                    }
                 }
             }
             
@@ -404,10 +432,11 @@ final class SampleRateSwitcher {
             maxRateForCurrentTrack = rate
         }
         
-        // Debounce log updates: wait 100ms and use the highest rate seen
+        // Debounce log updates: wait 30ms and use the highest rate seen
+        // (reduced from 100ms — log lines arrive in rapid bursts)
         logDebounceTask?.cancel()
         logDebounceTask = Task {
-            try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+            try? await Task.sleep(nanoseconds: 30_000_000) // 30ms
             if Task.isCancelled { return }
             
             let bestRate = self.maxRateForCurrentTrack
@@ -430,6 +459,11 @@ final class SampleRateSwitcher {
                     self.detectionWinner = "Real-time Log Stream"
                 }
                 await self.switchToRate(bestRate, startTime: self.playbackStartTime, source: "Log Stream")
+            }
+            
+            // Cache the rate for this track for instant switching on repeat plays
+            if let trackID = self.currentTrackID {
+                self.trackRateCache[trackID] = bestRate
             }
         }
     }
@@ -498,26 +532,16 @@ final class SampleRateSwitcher {
 
 
     private func pausePlayback() {
-        let script = NSAppleScript(source: """
-            tell application "Music"
-                pause
-            end tell
-        """)
         var errorInfo: NSDictionary?
-        script?.executeAndReturnError(&errorInfo)
+        pauseScript?.executeAndReturnError(&errorInfo)
         if let error = errorInfo {
             log("AppleScript pause error: \(error)")
         }
     }
     
     private func resumePlayback() {
-        let script = NSAppleScript(source: """
-            tell application "Music"
-                play
-            end tell
-        """)
         var errorInfo: NSDictionary?
-        script?.executeAndReturnError(&errorInfo)
+        playScript?.executeAndReturnError(&errorInfo)
         if let error = errorInfo {
             log("AppleScript resume error: \(error)")
         }
@@ -527,9 +551,11 @@ final class SampleRateSwitcher {
         guard isPausedForSwitch else { return }
         isPausedForSwitch = false
         
-        // Small delay to let DAC settle before resuming
+        // Set lastResumeTime synchronously to avoid race with notification handler
+        self.lastResumeTime = CFAbsoluteTimeGetCurrent()
+        // Minimal delay to let DAC settle before resuming
         pendingResumeTask = Task {
-            try? await Task.sleep(nanoseconds: 50_000_000) // 50ms
+            try? await Task.sleep(nanoseconds: 10_000_000) // 10ms
             if Task.isCancelled { return }
             self.lastResumeTime = CFAbsoluteTimeGetCurrent()
             resumePlayback()

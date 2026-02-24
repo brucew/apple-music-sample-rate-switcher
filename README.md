@@ -13,7 +13,7 @@ Apple Music (Music.app) resamples all audio to match the output device's current
 3. When the log stream detects the actual sample rate being used, switches the DAC via CoreAudio's `AudioObjectSetPropertyData`
 4. Music.app then outputs at the new (matching) rate — bit-perfect, no resampling
 
-Total latency from playback start to DAC switch: **~500–700ms** (the time it takes for Music.app to report its format to the system log).
+Total latency from playback start to DAC switch: **~500–700ms** on first play (the time it takes for Music.app to report its format to the system log). Subsequent plays of the same track use a cached rate for **near-instant** switching.
 
 ### Optional: Pause-During-Switch Mode
 
