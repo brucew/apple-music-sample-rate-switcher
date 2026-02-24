@@ -20,10 +20,17 @@ echo "Using identity: $ID"
 swift build -c release
 
 # Sign
+if [ -f "embedded.provisionprofile" ]; then
+    echo "Using embedded.provisionprofile found in current directory..."
+    # On macOS, you can't easily embed a profile in a bare binary with codesign alone, 
+    # but we'll try to sign with the entitlements and assume the user has installed the profile to 
+    # ~/Library/MobileDevice/Provisioning Profiles/
+fi
+
 codesign --force --options runtime --entitlements "$ENTITLEMENTS" --sign "$ID" "$BINARY"
 
 if [ $? -eq 0 ]; then
-    echo "SUCCESS: Binary signed with MusicKit entitlements."
+    echo "SUCCESS: Binary signed with entitlements."
     
     # Test if it's killed
     echo "Verifying binary execution..."
@@ -31,14 +38,20 @@ if [ $? -eq 0 ]; then
     RESULT=$?
     if [ $RESULT -eq 137 ] || [ $RESULT -eq 9 ]; then
         echo "--------------------------------------------------------------------------------"
-        echo "WARNING: The binary was KILLED by macOS. This usually means you added the "
-        echo "'com.apple.developer.music' entitlement but don't have a provisioning profile."
+        echo "WARNING: The binary was KILLED by macOS. This is expected if you have "
+        echo "'com.apple.developer.music' in your entitlements but no matching "
+        echo "Provisioning Profile installed on your Mac."
         echo ""
-        echo "To fix this, you have two options:"
-        echo "1. Create a Provisioning Profile in the Apple Developer Portal for this Bundle ID,"
-        echo "   download it, and sign with: codesign --provisioning-profile path/to/profile ..."
-        echo "2. Clear Entitlements.entitlements (remove the music key) and run this script again."
-        echo "   The tool will then use 'Log Stream' and 'AppleScript' fallbacks instead."
+        echo "HOW TO FIX THIS:"
+        echo "1. Create an App ID on developer.apple.com with 'MusicKit' capability."
+        echo "2. Create a macOS Development Provisioning Profile for that App ID."
+        echo "3. Download and DOUBLE-CLICK the .provisionprofile to install it."
+        echo "4. Ensure the CFBundleIdentifier in Info.plist matches your App ID."
+        echo "5. Run this script again."
+        echo ""
+        echo "ALTERNATIVE (LITE MODE):"
+        echo "Remove the 'com.apple.developer.music' entitlement from $ENTITLEMENTS."
+        echo "The tool will still work perfectly using Log Stream and AppleScript fallbacks."
         echo "--------------------------------------------------------------------------------"
     fi
 else

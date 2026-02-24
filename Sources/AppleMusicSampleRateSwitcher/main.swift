@@ -1,9 +1,6 @@
 import Foundation
 import CoreAudio
 import AudioToolbox
-#if canImport(MusicKit)
-import MusicKit
-#endif
 
 // MARK: - CoreAudio Helpers
 
@@ -267,9 +264,9 @@ private func listAudioOutputDevices() {
 final class SampleRateSwitcher {
     private let targetDeviceID: AudioDeviceID
     private let targetDeviceName: String
+    private let pauseDuringSwitch: Bool
     private var lastSwitchedRate: Float64 = 0
     private var logProcess: Process?
-    private var rateCache: [String: Int] = [:]
     private var logMonitor: LogMonitor?
     private var lastLogRate: Int?
     private var playbackStartTime: CFAbsoluteTime?
@@ -278,13 +275,16 @@ final class SampleRateSwitcher {
     private var lastHandledRate: Int?
     private var lastLoggedLogRate: Int?
     private var detectionWinner: String?
-    private var currentStorefrontID: String?
     private var maxRateForCurrentTrack: Int = 0
     private var logDebounceTask: Task<Void, Never>?
+    private var isPausedForSwitch: Bool = false
+    private var pendingResumeTask: Task<Void, Never>?
+    private var lastResumeTime: CFAbsoluteTime = 0
 
-    init(deviceID: AudioDeviceID) {
+    init(deviceID: AudioDeviceID, pauseDuringSwitch: Bool = false) {
         self.targetDeviceID = deviceID
         self.targetDeviceName = deviceName(for: deviceID) ?? "Unknown"
+        self.pauseDuringSwitch = pauseDuringSwitch
         self.logMonitor = LogMonitor { [weak self] rate in
             Task { @MainActor in
                 self?.handleLogRateUpdate(rate)
@@ -294,27 +294,6 @@ final class SampleRateSwitcher {
 
     func start() {
         logMonitor?.start()
-        #if canImport(MusicKit)
-        Task {
-            let status = MusicAuthorization.currentStatus
-            if status != .authorized {
-                log("INFO: MusicKit library access is \(status). This is expected if you haven't granted 'Media & Apple Music' permission. Catalog-only lookups will be used.")
-                
-                // Only request if not determined yet
-                if status == .notDetermined {
-                    log("Requesting MusicKit authorization...")
-                    let newStatus = await MusicAuthorization.request()
-                    log("MusicKit authorization status: \(newStatus)")
-                    if newStatus != .authorized {
-                        log("TIP: To manually grant permission, go to System Settings > Privacy & Security > Media & Apple Music.")
-                        log("Or run: tccutil reset MediaLibrary com.brucew.AppleMusicSampleRateSwitcher")
-                    }
-                }
-            } else {
-                log("SUCCESS: MusicKit authorized")
-            }
-        }
-        #endif
 
         let currentRate = nominalSampleRate(for: targetDeviceID) ?? 0
         log("Monitoring Apple Music for sample rate changes")
@@ -342,43 +321,6 @@ final class SampleRateSwitcher {
         log("Listening for playback events... (press Ctrl+C to stop)")
     }
 
-    private func findTrueSampleRateFromLogs() -> Int? {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/log")
-        process.arguments = ["show", "--predicate", "process == \"Music\" AND message CONTAINS \"activeFormat\"", "--last", "2s", "--info", "--style", "compact"]
-        
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        
-        do {
-            try process.run()
-            process.waitUntilExit()
-            
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            guard let output = String(data: data, encoding: .utf8) else { return nil }
-            
-            let lines = output.components(separatedBy: .newlines).reversed()
-            for line in lines {
-                if line.contains("sampleRate:") {
-                    let parts = line.components(separatedBy: "sampleRate:")
-                    if parts.count > 1 {
-                        let ratePart = parts[1].trimmingCharacters(in: .whitespaces)
-                        let rateStr = ratePart.prefix(while: { $0.isNumber || $0 == "." })
-                        if let rate = Double(rateStr) {
-                            // The log might say "48khz" or "48000" or just "48". 
-                            // Usually "48khz" or "44.1khz".
-                            let rawRate = rate < 1000 ? Int(rate * 1000) : Int(rate)
-                            return normalizeSampleRate(rawRate)
-                        }
-                    }
-                }
-            }
-        } catch {
-            log("ERROR: Failed to run log command: \(error)")
-        }
-        
-        return nil
-    }
 
     @objc private func handlePlayerNotification(_ notification: Notification) {
         guard let info = notification.userInfo else { return }
@@ -387,46 +329,69 @@ final class SampleRateSwitcher {
         let trackName = info["Name"] as? String ?? "Unknown"
         let artist = info["Artist"] as? String ?? "Unknown"
         let album = info["Album"] as? String ?? "Unknown"
-        let storefrontID = info["Storefront-Item-ID"] as? String
-        
-        // Debug log all notifications to verify detection is working
-        // log("DEBUG: Notification received — State: \(state), Track: \(trackName)")
-
         let trackID = "\(trackName)-\(artist)-\(album)"
         
-        // Skip redundant notifications for the same track and state, 
-        // unless metadata (storefrontID) has appeared
+        // Skip redundant notifications
         if trackID == currentTrackID && state == currentTrackState {
-            if storefrontID == nil || (storefrontID != nil && rateCache[storefrontID!] != nil) {
-                return
-            }
+            return
         }
         
+        let isNewTrack = trackID != currentTrackID
+        let isPlayStart = state == "Playing" && currentTrackState != "Playing"
+
         currentTrackID = trackID
         currentTrackState = state
-        currentStorefrontID = storefrontID
 
         log("Player state: \(state) — \(trackName) by \(artist)")
 
         if state == "Playing" {
             let now = CFAbsoluteTimeGetCurrent()
-            playbackStartTime = now
-            // Reset state when a new track starts
-            lastLogRate = nil
-            lastHandledRate = nil
-            lastLoggedLogRate = nil
-            detectionWinner = nil
-            maxRateForCurrentTrack = 0
-            logDebounceTask?.cancel()
-            logDebounceTask = nil
             
-            Task {
-                await processTrackChange(info: info, storefrontID: storefrontID)
+            // Ignore "Playing" notifications that occur within 500ms of our resume
+            // These are triggered by our own resumePlayback() call
+            if (now - lastResumeTime) < 0.5 {
+                return
             }
-        } else {
+            
+            if isNewTrack || isPlayStart {
+                playbackStartTime = now
+                // Reset state when a new track starts
+                lastLogRate = nil
+                lastHandledRate = nil
+                lastLoggedLogRate = nil
+                detectionWinner = nil
+                maxRateForCurrentTrack = 0
+                logDebounceTask?.cancel()
+                logDebounceTask = nil
+                pendingResumeTask?.cancel()
+                pendingResumeTask = nil
+                isPausedForSwitch = false
+                
+                // If pause-during-switch is enabled, pause immediately
+                if pauseDuringSwitch {
+                    pausePlayback()
+                    isPausedForSwitch = true
+                    log("Paused playback for sample rate detection...")
+                }
+            }
+            
+            // Log stream will handle sample rate detection
+        } else if state == "Stopped" {
+            // Reset state on stop to avoid carrying over max rate to next track if it's detected via log early
             playbackStartTime = nil
             lastHandledRate = nil
             lastLoggedLogRate = nil
+            maxRateForCurrentTrack = 0
+            currentTrackID = nil
+            isPausedForSwitch = false
+            pendingResumeTask?.cancel()
+        } else {
+            // Paused - but only reset if we didn't pause it ourselves
+            if !isPausedForSwitch {
+                playbackStartTime = nil
+                lastHandledRate = nil
+                lastLoggedLogRate = nil
+            }
         }
     }
 
@@ -468,89 +433,6 @@ final class SampleRateSwitcher {
         }
     }
 
-    private func processTrackChange(info: [AnyHashable: Any], storefrontID: String?) async {
-        let now = playbackStartTime
-        
-        // Launch parallel lookups
-        Task {
-            if let asRate = await queryTrackSampleRateAsync(isStreaming: storefrontID != nil) {
-                await switchToRate(asRate, startTime: now, source: "AppleScript")
-            }
-        }
-        
-        Task {
-            if let mkRate = await queryMusicKitSampleRateAsync(storefrontID: storefrontID, info: info) {
-                await switchToRate(mkRate, startTime: now, source: "MusicKit/Catalog")
-            }
-        }
-        
-        // We don't block here. handleLogRateUpdate will also fire independently.
-    }
-
-    private func queryTrackSampleRateAsync(isStreaming: Bool) async -> Int? {
-        let startTime = CFAbsoluteTimeGetCurrent()
-        let result = queryTrackSampleRate() 
-        let elapsed = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
-        
-        guard let (rate, isUrlTrack) = result else { return nil }
-        
-        // Robust streaming check
-        let definitelyStreaming = isStreaming || isUrlTrack
-        
-        // Skip 44.1kHz for streaming tracks as AppleScript is often wrong/cached for them at start
-        if definitelyStreaming && rate == 44100 {
-            // We'll wait for MusicKit or Log Stream for better accuracy
-            return nil
-        }
-        
-        // Only log if it's not the default 44.1k or if it took long
-        if rate > 44100 || elapsed > 1000 {
-            log("AppleScript query took \(String(format: "%.1f", elapsed)) ms (Rate: \(rate) Hz, Streaming: \(definitelyStreaming))")
-        }
-        return rate
-    }
-
-    private func queryMusicKitSampleRateAsync(storefrontID: String?, info: [AnyHashable: Any]) async -> Int? {
-        let startTime = CFAbsoluteTimeGetCurrent()
-        
-        var sid = storefrontID
-        if sid == nil {
-            // Try to find it in other keys
-            sid = info["Track ID"] as? String ?? info["PersistentID"] as? String
-            if sid == nil {
-                // Last resort: search by name/artist
-                let name = info["Name"] as? String ?? ""
-                let artist = info["Artist"] as? String ?? ""
-                if !name.isEmpty && !artist.isEmpty {
-                    // Try iTunes search fallback
-                    let rate = await searchiTunesForSampleRate(name: name, artist: artist)
-                    let elapsed = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
-                    if let r = rate {
-                        log("iTunes Search lookup took \(String(format: "%.1f", elapsed)) ms (Rate: \(r) Hz)")
-                    }
-                    return rate
-                }
-            }
-        }
-        
-        guard let id = sid else {
-            // If we still don't have an ID, log the keys we DID have
-            let keys = info.keys.map { "\($0)" }.joined(separator: ", ")
-            log("DEBUG: No storefrontID found. Info keys: \(keys)")
-            return nil
-        }
-        
-        let rate = await queryMusicKitSampleRate(storefrontID: id)
-        let elapsed = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
-        
-        if let r = rate {
-            log("MusicKit/Catalog lookup took \(String(format: "%.1f", elapsed)) ms (Rate: \(r) Hz)")
-        } else {
-            log("MusicKit/Catalog lookup failed (took \(String(format: "%.1f", elapsed)) ms)")
-        }
-        
-        return rate
-    }
 
     private func switchToRate(_ trackRate: Int, startTime: CFAbsoluteTime? = nil, source: String = "Unknown") async {
         let trackRateFloat = Float64(trackRate)
@@ -564,6 +446,8 @@ final class SampleRateSwitcher {
             if lastHandledRate != trackRate {
                 log("DAC already at \(Int(currentDACRate)) Hz — no switch needed (Source: \(source))")
                 lastHandledRate = trackRate
+                // Resume playback if we paused it (no switch needed)
+                resumeIfPaused()
             }
             return
         }
@@ -597,153 +481,57 @@ final class SampleRateSwitcher {
             }
             lastSwitchedRate = trackRateFloat
             
-            // Cache the result if we have a storefront ID
-            if let sid = currentStorefrontID {
-                rateCache[sid] = trackRate
-            }
+            
+            // Resume playback if we paused it
+            resumeIfPaused()
         } else {
             log("FAILED: Could not set DAC to \(trackRate) Hz")
+            // Still resume even if switch failed
+            resumeIfPaused()
         }
     }
 
-    private func queryMusicKitSampleRate(storefrontID: String) async -> Int? {
-        if let cached = rateCache[storefrontID] {
-            return cached
-        }
 
-        #if canImport(MusicKit)
-        // Try even if library access is denied, catalog access might still work
-        do {
-            // First, try the standard Song request which is faster
-            var rate: Int? = nil
-            let request = MusicCatalogResourceRequest<Song>(matching: \.id, equalTo: MusicItemID(storefrontID))
-            if let response = try? await request.response(), let song = response.items.first {
-                // Map variants to reasonable defaults if we can't get exact info
-                if let variants = song.audioVariants {
-                    if variants.contains(.highResolutionLossless) {
-                        rate = 96000
-                    } else if variants.contains(.lossless) {
-                        rate = 48000
-                    }
-                }
-            }
-            
-            // Attempt to get exact metadata via the raw data request
-            var storefront = "us"
-            if let s = try? await MusicDataRequest.currentCountryCode {
-                storefront = s
-            }
-            let url = URL(string: "https://api.music.apple.com/v1/catalog/\(storefront)/songs/\(storefrontID)?extend=extended-attributes")!
-            let dataRequest = MusicDataRequest(urlRequest: URLRequest(url: url))
-            let dataResponse = try await dataRequest.response()
-            
-            if let json = try? JSONSerialization.jsonObject(with: dataResponse.data) as? [String: Any],
-               let data = json["data"] as? [[String: Any]],
-               let songData = data.first,
-               let attributes = songData["attributes"] as? [String: Any],
-               let extended = attributes["extendedAttributes"] as? [String: Any],
-               let audioAttrs = extended["audioAttributes"] as? [[String: Any]] {
-                
-                let maxRate = audioAttrs.compactMap { $0["sampleRate"] as? Int }.max()
-                if let r = maxRate, r > 0 {
-                    let normalizedRate = normalizeSampleRate(r)
-                    rate = normalizedRate
-                }
-            }
-            
-            if let r = rate {
-                rateCache[storefrontID] = r
-                return r
-            }
-        } catch {
-            // If MusicKit fails (e.g. 401 Unauthorized), we'll fall back to iTunes lookup
-            if !error.localizedDescription.contains("401") {
-                log("DEBUG: MusicKit Catalog error: \(error.localizedDescription)")
-            }
-        }
-        #endif
-
-        // Fallback to public iTunes Search API if MusicKit fails
-        return await queryiTunesLookupSampleRate(storefrontID: storefrontID)
-    }
-
-    private func searchiTunesForSampleRate(name: String, artist: String) async -> Int? {
-        let query = "\(name) \(artist)".addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-        let url = URL(string: "https://itunes.apple.com/search?term=\(query)&entity=song&limit=1")!
-        
-        do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let results = json["results"] as? [[String: Any]],
-               let track = results.first,
-               let trackID = track["trackId"] as? Int {
-                return await queryMusicKitSampleRate(storefrontID: String(trackID))
-            }
-        } catch {
-            log("iTunes Search error: \(error)")
-        }
-        return nil
-    }
-
-    private func queryiTunesLookupSampleRate(storefrontID: String) async -> Int? {
-        // The iTunes lookup API doesn't give sample rate, but it can confirm if it's a 'Hi-Res' track 
-        // by looking at the collection name or other hints, though it's limited.
-        // Actually, the best way to get it if MusicKit fails is to rely on the log monitor.
-        // But we can at least try to see if there are any hints.
-        
-        let url = URL(string: "https://itunes.apple.com/lookup?id=\(storefrontID)")!
-        do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let results = json["results"] as? [[String: Any]],
-               let track = results.first {
-                
-                // Some tracks have indicators in their names or collections
-                let name = (track["trackName"] as? String ?? "").lowercased()
-                let collection = (track["collectionName"] as? String ?? "").lowercased()
-                
-                if name.contains("remastered") || collection.contains("remastered") {
-                    // Remastered often means 48k+ but not always.
-                    // This is just a hint. The log monitor is the real source of truth.
-                }
-            }
-        } catch {
-            log("iTunes Lookup error: \(error)")
-        }
-        return nil
-    }
-
-    private func queryTrackSampleRate() -> (Int, Bool)? {
+    private func pausePlayback() {
         let script = NSAppleScript(source: """
             tell application "Music"
-                try
-                    set theTrack to current track
-                    set theRate to sample rate of theTrack
-                    set theLocation to missing value
-                    try
-                        set theLocation to location of theTrack
-                    end try
-                    return {theRate, theLocation is missing value}
-                on error
-                    return {-1, false}
-                end try
+                pause
             end tell
         """)
         var errorInfo: NSDictionary?
-        let result = script?.executeAndReturnError(&errorInfo)
-
+        script?.executeAndReturnError(&errorInfo)
         if let error = errorInfo {
-            log("AppleScript error: \(error)")
-            return nil
+            log("AppleScript pause error: \(error)")
         }
-
-        guard let list = result, list.numberOfItems >= 2 else { return nil }
-        
-        let rate = Int(list.atIndex(1)?.int32Value ?? -1)
-        let isStreaming = list.atIndex(2)?.booleanValue ?? false
-        
-        return rate > 0 ? (normalizeSampleRate(rate), isStreaming) : nil
     }
+    
+    private func resumePlayback() {
+        let script = NSAppleScript(source: """
+            tell application "Music"
+                play
+            end tell
+        """)
+        var errorInfo: NSDictionary?
+        script?.executeAndReturnError(&errorInfo)
+        if let error = errorInfo {
+            log("AppleScript resume error: \(error)")
+        }
+    }
+    
+    private func resumeIfPaused() {
+        guard isPausedForSwitch else { return }
+        isPausedForSwitch = false
+        
+        // Small delay to let DAC settle before resuming
+        pendingResumeTask = Task {
+            try? await Task.sleep(nanoseconds: 50_000_000) // 50ms
+            if Task.isCancelled { return }
+            self.lastResumeTime = CFAbsoluteTimeGetCurrent()
+            resumePlayback()
+            log("Resumed playback after DAC switch")
+        }
+    }
+
 }
 
 // MARK: - Log Monitor
@@ -759,7 +547,14 @@ final class LogMonitor {
     func start() {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/log")
-        process.arguments = ["stream", "--predicate", "process == \"Music\" AND (message CONTAINS \"activeFormat\" OR message CONTAINS \"subaq_buildCAAudioQueue\")", "--style", "compact"]
+        let predicates = [
+            "process == \"Music\" AND message CONTAINS \"activeFormat\"",
+            "process == \"Music\" AND message CONTAINS \"subaq_buildCAAudioQueue\"",
+            "process == \"Music\" AND message CONTAINS \"FigStreamPlayer\"",
+            "process == \"Music\" AND message CONTAINS \"asbdSampleRate\""
+        ].joined(separator: " OR ")
+        
+        process.arguments = ["stream", "--predicate", predicates, "--style", "compact"]
         
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -771,21 +566,40 @@ final class LogMonitor {
             
             let lines = output.components(separatedBy: .newlines)
             for line in lines {
+                var detectedRate: Int? = nil
+                
                 if line.contains("sampleRate:") {
                     let parts = line.components(separatedBy: "sampleRate:")
                     if parts.count > 1 {
                         let ratePart = parts[1].trimmingCharacters(in: .whitespaces)
                         let rateStr = ratePart.prefix(while: { $0.isNumber || $0 == "." })
                         if let rate = Double(rateStr) {
-                            let finalRate: Int
-                            if rate < 1000 {
-                                finalRate = Int(rate * 1000)
-                            } else {
-                                finalRate = Int(rate)
-                            }
-                            self?.callback(normalizeSampleRate(finalRate))
+                            detectedRate = rate < 1000 ? Int(rate * 1000) : Int(rate)
                         }
                     }
+                } else if line.contains("SampleRate ") {
+                    // Handle formats like [SampleRate 96000]
+                    let parts = line.components(separatedBy: "SampleRate ")
+                    if parts.count > 1 {
+                        let ratePart = parts[1].trimmingCharacters(in: CharacterSet.decimalDigits.inverted)
+                        if let rate = Int(ratePart) {
+                            detectedRate = rate
+                        }
+                    }
+                } else if line.contains("asbdSampleRate = ") {
+                    // Handle formats like asbdSampleRate = 44.1 kHz
+                    let parts = line.components(separatedBy: "asbdSampleRate = ")
+                    if parts.count > 1 {
+                        let ratePart = parts[1].trimmingCharacters(in: .whitespaces)
+                        let rateStr = ratePart.prefix(while: { $0.isNumber || $0 == "." })
+                        if let rate = Double(rateStr) {
+                            detectedRate = rate < 1000 ? Int(rate * 1000) : Int(rate)
+                        }
+                    }
+                }
+                
+                if let rate = detectedRate {
+                    self?.callback(normalizeSampleRate(rate))
                 }
             }
         }
@@ -813,13 +627,15 @@ private func printUsage() {
     Apple Music track's native sample rate when playback starts.
     
     USAGE:
-        AppleMusicSampleRateSwitcher [--device-uid <UID>] [--list-devices]
+        AppleMusicSampleRateSwitcher [OPTIONS]
     
     OPTIONS:
-        --list-devices    List all audio output devices and their UIDs
-        --device-uid <UID>  Specify the target DAC by its UID
-                            (default: system default output device)
-        --help            Show this help message
+        --list-devices        List all audio output devices and their UIDs
+        --device-uid <UID>    Specify the target DAC by its UID
+                              (default: system default output device)
+        --pause-during-switch Pause playback while switching DAC sample rate,
+                              then auto-resume. Eliminates audio glitches.
+        --help                Show this help message
     
     EXAMPLES:
         # List available audio devices to find your DAC's UID:
@@ -830,6 +646,9 @@ private func printUsage() {
     
         # Run with a specific DAC:
         AppleMusicSampleRateSwitcher --device-uid "AppleUSBAudioEngine:Schiit Audio:Modi:001"
+    
+        # Run with pause-during-switch for gapless switching:
+        AppleMusicSampleRateSwitcher --device-uid "YOUR_DAC_UID" --pause-during-switch
     """)
 }
 
@@ -852,6 +671,7 @@ func run() async {
         exit(0)
     }
 
+    let pauseDuringSwitch = args.contains("--pause-during-switch")
     let deviceID: AudioDeviceID
 
     if let uidIndex = args.firstIndex(of: "--device-uid"), uidIndex + 1 < args.count {
@@ -872,13 +692,17 @@ func run() async {
         log("Using default output device: \(deviceName(for: id) ?? "Unknown")")
     }
 
+    if pauseDuringSwitch {
+        log("Pause-during-switch mode ENABLED: Playback will pause during DAC rate changes")
+    }
+
     // Handle SIGINT gracefully
     signal(SIGINT) { _ in
         print("\n[\(Date())] Shutting down...")
         exit(0)
     }
 
-    globalSwitcher = SampleRateSwitcher(deviceID: deviceID)
+    globalSwitcher = SampleRateSwitcher(deviceID: deviceID, pauseDuringSwitch: pauseDuringSwitch)
     globalSwitcher?.start()
 }
 

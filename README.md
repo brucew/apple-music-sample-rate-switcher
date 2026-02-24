@@ -1,6 +1,6 @@
 # Apple Music Sample Rate Switcher
 
-A lightweight macOS daemon that automatically switches your DAC's sample rate to match the current Apple Music track's native sample rate — within ~100ms of playback start.
+A lightweight macOS daemon that automatically switches your DAC's sample rate to match the current Apple Music track's native sample rate — within ~500-700ms of playback start.
 
 ## The Problem
 
@@ -10,14 +10,20 @@ Apple Music (Music.app) resamples all audio to match the output device's current
 
 1. Listens for `com.apple.Music.playerInfo` distributed notifications (fires instantly on play/pause/skip)
 2. Monitors macOS system logs in real-time (`log stream`) for `activeFormat` events from Music.app
-3. On "Playing" event, concurrently:
-   - Queries the track's native sample rate via AppleScript (for local files)
-   - Queries Apple Music Catalog via MusicKit or iTunes API (for streaming tracks)
-   - Uses the latest rate detected by the log monitor as the final source of truth
-4. If the DAC's current rate doesn't match, switches it via CoreAudio's `AudioObjectSetPropertyData`
-5. Music.app then outputs at the new (matching) rate — bit-perfect, no resampling
+3. When the log stream detects the actual sample rate being used, switches the DAC via CoreAudio's `AudioObjectSetPropertyData`
+4. Music.app then outputs at the new (matching) rate — bit-perfect, no resampling
 
-Total latency from playback start to DAC switch: **~10–100ms** (near-instant due to real-time log monitoring and metadata caching).
+Total latency from playback start to DAC switch: **~500–700ms** (the time it takes for Music.app to report its format to the system log).
+
+### Optional: Pause-During-Switch Mode
+
+Use `--pause-during-switch` to eliminate audio glitches:
+1. The tool pauses Music.app immediately when a new track starts
+2. Waits for the log stream to detect the correct sample rate
+3. Switches the DAC
+4. Automatically resumes playback
+
+This provides a seamless experience with no audible pops or glitches during rate changes.
 
 ## Requirements
 
@@ -25,7 +31,6 @@ Total latency from playback start to DAC switch: **~10–100ms** (near-instant d
 - Swift 5.9+
 - An Apple Music subscription with Lossless enabled in Music.app settings
 - A DAC that supports multiple sample rates
-- **Apple Developer ID** (required for MusicKit entitlements)
 
 ## Setup
 
@@ -36,55 +41,25 @@ Open **Music.app** → `Settings` → `Playback` → set Audio Quality to **Loss
 ### 2. Build
 
 ```bash
-cd /Users/brucew/Projects/apple-music-sample-rate-switcher
 swift build -c release
 ```
 
 The binary will be at `.build/release/AppleMusicSampleRateSwitcher`.
 
-### 3. Sign the Binary
+### 3. Sign the Binary (Optional)
 
-To use MusicKit (required for accurate streaming sample rates), the binary must be signed with your Developer ID and include the proper entitlements and an embedded `Info.plist`.
-
-1. **Find your signing identity**:
+For basic functionality, you can use ad-hoc signing:
 ```bash
-security find-identity -v -p codesigning
+codesign --force --sign - .build/release/AppleMusicSampleRateSwitcher
 ```
 
-2. **Run the provided signing script**:
-This script will build the project and sign it with your Developer ID identity.
+Or use the provided script with your Developer ID:
 ```bash
 chmod +x sign_and_run.sh
 ./sign_and_run.sh
 ```
 
-Alternatively, you can sign manually:
-```bash
-# Build
-swift build -c release
-
-# Sign with entitlements and Info.plist (already embedded in the binary by the build process)
-codesign --force --options runtime --entitlements Entitlements.entitlements --sign "Developer ID Application: YOUR NAME" .build/release/AppleMusicSampleRateSwitcher
-```
-
-### 4. MusicKit & Permissions
-
-This tool uses MusicKit to fetch high-resolution metadata for streaming tracks. 
-
-#### If MusicKit says "Denied":
-This is common for command-line tools on macOS. The switcher will automatically fall back to:
-1. **Real-time Log Monitoring (`log stream`)**: This is extremely fast and accurate as it watches what Music.app is actually doing.
-2. **iTunes Lookup API**: For basic track metadata.
-3. **AppleScript**: For local files.
-
-#### If the binary is "Killed" on launch:
-This means you added the `com.apple.developer.music` entitlement but don't have a matching **Provisioning Profile**. 
-- To use MusicKit properly, you need to create a profile in the Apple Developer portal for the bundle ID `com.brucew.AppleMusicSampleRateSwitcher`.
-- **Alternatively**, just remove the entitlement from `Entitlements.entitlements` and re-sign. The tool will run perfectly using the Log and AppleScript fallbacks.
-
-If you don't see the prompt or get an error, go to **System Settings > Privacy & Security > Media & Apple Music** and ensure the terminal or app is enabled.
-
-### 5. Find Your DAC's UID
+### 4. Find Your DAC's UID
 
 ```bash
 .build/release/AppleMusicSampleRateSwitcher --list-devices
@@ -92,7 +67,7 @@ If you don't see the prompt or get an error, go to **System Settings > Privacy &
 
 This lists all audio output devices with their UIDs and supported sample rates.
 
-### 6. Run
+### 5. Run
 
 ```bash
 # Use default output device:
@@ -100,17 +75,19 @@ This lists all audio output devices with their UIDs and supported sample rates.
 
 # Use a specific DAC:
 .build/release/AppleMusicSampleRateSwitcher --device-uid "YOUR_DAC_UID"
+
+# Use pause-during-switch for gapless switching:
+.build/release/AppleMusicSampleRateSwitcher --device-uid "YOUR_DAC_UID" --pause-during-switch
 ```
 
-### 5. Test
+### 6. Test
 
 Play a track in Music.app. You should see output like:
 
 ```
-[2026-02-23 18:45:12.345] Player state: Playing — Bohemian Rhapsody by Queen
-[2026-02-23 18:45:12.389] Track native sample rate: 96000 Hz
-[2026-02-23 18:45:12.390] Switching DAC from 44100 Hz to 96000 Hz...
-[2026-02-23 18:45:12.402] SUCCESS: DAC set to 96000 Hz (took 57.3 ms)
+[2026-02-23 21:30:12.345] Player state: Playing — Bohemian Rhapsody by Queen
+[2026-02-23 21:30:12.890] Switching DAC from 44100 Hz to 96000 Hz... (Source: Log Stream)
+[2026-02-23 21:30:12.891] SUCCESS: DAC set to 96000 Hz (switch took 0.5 ms, detected at +545.2 ms) (Source: Log Stream)
 ```
 
 ## Run as a Background Agent (launchd)
@@ -131,11 +108,11 @@ launchctl unload ~/Library/LaunchAgents/com.brucew.apple-music-sample-rate-switc
 ## Permissions
 
 On first run, macOS may prompt you to grant:
-- **Automation** permission (to control Music.app via AppleScript)
+- **Automation** permission (to control Music.app via AppleScript for pause/resume)
 - Go to `System Settings` → `Privacy & Security` → `Automation` and ensure the terminal/app running the switcher can control "Music"
 
 ## Troubleshooting
 
-- **"Could not determine track sample rate"**: Music.app may not expose `sample rate` for streaming tracks (only downloaded/matched). Try downloading the track first.
 - **"Sample rate is not settable on this device"**: Some built-in audio devices (e.g., MacBook speakers) don't support rate switching. Use an external DAC.
 - **No notifications firing**: Ensure Music.app (not a third-party player) is being used. The notification name is specific to Apple's Music app.
+- **Slow detection**: The log stream typically detects the sample rate within 500-700ms. Use `--pause-during-switch` if you want to avoid hearing audio at the wrong rate.
