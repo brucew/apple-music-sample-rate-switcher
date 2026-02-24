@@ -1,0 +1,13 @@
+{
+  "": {
+    "dependencies": "/Users/brucew/Projects/apple-music-sample-rate-switcher/.build/arm64-apple-macosx/release/AppleMusicSampleRateSwitcher.build/AppleMusicSampleRateSwitcher.d",
+    "object": "/Users/brucew/Projects/apple-music-sample-rate-switcher/.build/arm64-apple-macosx/release/AppleMusicSampleRateSwitcher.build/AppleMusicSampleRateSwitcher.o",
+    "swift-dependencies": "/Users/brucew/Projects/apple-music-sample-rate-switcher/.build/arm64-apple-macosx/release/AppleMusicSampleRateSwitcher.build/master.swiftdeps"
+  },
+  "/Users/brucew/Projects/apple-music-sample-rate-switcher/Sources/AppleMusicSampleRateSwitcher/main.swift": {
+    "object": "/Users/brucew/Projects/apple-music-sample-rate-switcher/.build/arm64-apple-macosx/release/AppleMusicSampleRateSwitcher.build/main.swift.o",
+    "swiftmodule": "/Users/brucew/Projects/apple-music-sample-rate-switcher/.build/arm64-apple-macosx/release/AppleMusicSampleRateSwitcher.build/main~partial.swiftmodule",
+    "swift-dependencies": "/Users/brucew/Projects/apple-music-sample-rate-switcher/.build/arm64-apple-macosx/release/AppleMusicSampleRateSwitcher.build/main.swiftdeps",
+    "diagnostics": "/Users/brucew/Projects/apple-music-sample-rate-switcher/.build/arm64-apple-macosx/release/AppleMusicSampleRateSwitcher.build/main.dia"
+  }
+}

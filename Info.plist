@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.brucew.AppleMusicSampleRateSwitcher</string>
+    <key>CFBundleName</key>
+    <string>AppleMusicSampleRateSwitcher</string>
+    <key>CFBundleVersion</key>
+    <string>1.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>NSAppleMusicUsageDescription</key>
+    <string>This app needs access to Apple Music to determine the native sample rate of the tracks you play.</string>
+</dict>
+</plist>

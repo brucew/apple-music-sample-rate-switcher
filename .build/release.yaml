@@ -1,0 +1,66 @@
+client:
+  name: basic
+  file-system: device-agnostic
+tools: {}
+targets:
+  "AppleMusicSampleRateSwitcher-arm64-apple-macosx26.0-release.exe": ["<AppleMusicSampleRateSwitcher-arm64-apple-macosx26.0-release.exe>"]
+  "AppleMusicSampleRateSwitcher-arm64-apple-macosx26.0-release.module": ["<AppleMusicSampleRateSwitcher-arm64-apple-macosx26.0-release.module>"]
+  "PackageStructure": ["<PackageStructure>"]
+  "main": ["<AppleMusicSampleRateSwitcher-arm64-apple-macosx26.0-release.exe>","<AppleMusicSampleRateSwitcher-arm64-apple-macosx26.0-release.module>"]
+  "test": ["<AppleMusicSampleRateSwitcher-arm64-apple-macosx26.0-release.exe>","<AppleMusicSampleRateSwitcher-arm64-apple-macosx26.0-release.module>"]
+default: "main"
+nodes:
+  "/Users/brucew/Projects/apple-music-sample-rate-switcher/Sources/AppleMusicSampleRateSwitcher/":
+    is-directory-structure: true
+    content-exclusion-patterns: [".git",".build"]
+commands:
+  "/Users/brucew/Projects/apple-music-sample-rate-switcher/.build/arm64-apple-macosx/release/AppleMusicSampleRateSwitcher.build/sources":
+    tool: write-auxiliary-file
+    inputs: ["<sources-file-list>","/Users/brucew/Projects/apple-music-sample-rate-switcher/Sources/AppleMusicSampleRateSwitcher/main.swift"]
+    outputs: ["/Users/brucew/Projects/apple-music-sample-rate-switcher/.build/arm64-apple-macosx/release/AppleMusicSampleRateSwitcher.build/sources"]
+    description: "Write auxiliary file /Users/brucew/Projects/apple-music-sample-rate-switcher/.build/arm64-apple-macosx/release/AppleMusicSampleRateSwitcher.build/sources"
+
+  "/Users/brucew/Projects/apple-music-sample-rate-switcher/.build/arm64-apple-macosx/release/AppleMusicSampleRateSwitcher.product/Objects.LinkFileList":
+    tool: write-auxiliary-file
+    inputs: ["<link-file-list>","/Users/brucew/Projects/apple-music-sample-rate-switcher/.build/arm64-apple-macosx/release/AppleMusicSampleRateSwitcher.build/main.swift.o"]
+    outputs: ["/Users/brucew/Projects/apple-music-sample-rate-switcher/.build/arm64-apple-macosx/release/AppleMusicSampleRateSwitcher.product/Objects.LinkFileList"]
+    description: "Write auxiliary file /Users/brucew/Projects/apple-music-sample-rate-switcher/.build/arm64-apple-macosx/release/AppleMusicSampleRateSwitcher.product/Objects.LinkFileList"
+
+  "/Users/brucew/Projects/apple-music-sample-rate-switcher/.build/arm64-apple-macosx/release/swift-version--1AB21518FC5DEDBE.txt":
+    tool: write-auxiliary-file
+    inputs: ["<swift-get-version>","/Library/Developer/CommandLineTools/usr/bin/swiftc"]
+    outputs: ["/Users/brucew/Projects/apple-music-sample-rate-switcher/.build/arm64-apple-macosx/release/swift-version--1AB21518FC5DEDBE.txt"]
+    always-out-of-date: "true"
+    description: "Write auxiliary file /Users/brucew/Projects/apple-music-sample-rate-switcher/.build/arm64-apple-macosx/release/swift-version--1AB21518FC5DEDBE.txt"
+
+  "<AppleMusicSampleRateSwitcher-arm64-apple-macosx26.0-release.exe>":
+    tool: phony
+    inputs: ["/Users/brucew/Projects/apple-music-sample-rate-switcher/.build/arm64-apple-macosx/release/AppleMusicSampleRateSwitcher"]
+    outputs: ["<AppleMusicSampleRateSwitcher-arm64-apple-macosx26.0-release.exe>"]
+
+  "<AppleMusicSampleRateSwitcher-arm64-apple-macosx26.0-release.module>":
+    tool: phony
+    inputs: ["/Users/brucew/Projects/apple-music-sample-rate-switcher/.build/arm64-apple-macosx/release/AppleMusicSampleRateSwitcher.build/main.swift.o","/Users/brucew/Projects/apple-music-sample-rate-switcher/.build/arm64-apple-macosx/release/Modules/AppleMusicSampleRateSwitcher.swiftmodule"]
+    outputs: ["<AppleMusicSampleRateSwitcher-arm64-apple-macosx26.0-release.module>"]
+
+  "C.AppleMusicSampleRateSwitcher-arm64-apple-macosx26.0-release.exe":
+    tool: shell
+    inputs: ["/Users/brucew/Projects/apple-music-sample-rate-switcher/.build/arm64-apple-macosx/release/AppleMusicSampleRateSwitcher.build/main.swift.o","/Users/brucew/Projects/apple-music-sample-rate-switcher/.build/arm64-apple-macosx/release/AppleMusicSampleRateSwitcher.product/Objects.LinkFileList"]
+    outputs: ["/Users/brucew/Projects/apple-music-sample-rate-switcher/.build/arm64-apple-macosx/release/AppleMusicSampleRateSwitcher"]
+    description: "Linking ./.build/arm64-apple-macosx/release/AppleMusicSampleRateSwitcher"
+    args: ["/Library/Developer/CommandLineTools/usr/bin/swiftc","-L","/Users/brucew/Projects/apple-music-sample-rate-switcher/.build/arm64-apple-macosx/release","-o","/Users/brucew/Projects/apple-music-sample-rate-switcher/.build/arm64-apple-macosx/release/AppleMusicSampleRateSwitcher","-module-name","AppleMusicSampleRateSwitcher","-Xlinker","-no_warn_duplicate_libraries","-emit-executable","-Xlinker","-dead_strip","-Xlinker","-alias","-Xlinker","_AppleMusicSampleRateSwitcher_main","-Xlinker","_main","-Xlinker","-rpath","-Xlinker","@loader_path","@/Users/brucew/Projects/apple-music-sample-rate-switcher/.build/arm64-apple-macosx/release/AppleMusicSampleRateSwitcher.product/Objects.LinkFileList","-Xlinker","-rpath","-Xlinker","/Library/Developer/CommandLineTools/usr/lib/swift-6.2/macosx","-target","arm64-apple-macosx13.0","-framework","CoreAudio","-framework","AudioToolbox","-framework","MusicKit","-Xlinker","-sectcreate","-Xlinker","__TEXT","-Xlinker","__info_plist","-Xlinker","Info.plist","-I","/Library/Developer/CommandLineTools/Library/Developer/Frameworks","-L","/Library/Developer/CommandLineTools/Library/Developer/Frameworks","-plugin-path","/Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing","-sdk","/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk","-g"]
+
+  "C.AppleMusicSampleRateSwitcher-arm64-apple-macosx26.0-release.module":
+    tool: shell
+    inputs: ["/Users/brucew/Projects/apple-music-sample-rate-switcher/Sources/AppleMusicSampleRateSwitcher/main.swift","/Users/brucew/Projects/apple-music-sample-rate-switcher/.build/arm64-apple-macosx/release/swift-version--1AB21518FC5DEDBE.txt","/Users/brucew/Projects/apple-music-sample-rate-switcher/.build/arm64-apple-macosx/release/AppleMusicSampleRateSwitcher.build/sources"]
+    outputs: ["/Users/brucew/Projects/apple-music-sample-rate-switcher/.build/arm64-apple-macosx/release/AppleMusicSampleRateSwitcher.build/main.swift.o","/Users/brucew/Projects/apple-music-sample-rate-switcher/.build/arm64-apple-macosx/release/Modules/AppleMusicSampleRateSwitcher.swiftmodule"]
+    description: "Compiling Swift Module 'AppleMusicSampleRateSwitcher' (1 sources)"
+    args: ["/Library/Developer/CommandLineTools/usr/bin/swiftc","-module-name","AppleMusicSampleRateSwitcher","-emit-dependencies","-emit-module","-emit-module-path","/Users/brucew/Projects/apple-music-sample-rate-switcher/.build/arm64-apple-macosx/release/Modules/AppleMusicSampleRateSwitcher.swiftmodule","-output-file-map","/Users/brucew/Projects/apple-music-sample-rate-switcher/.build/arm64-apple-macosx/release/AppleMusicSampleRateSwitcher.build/output-file-map.json","-whole-module-optimization","-num-threads","10","-c","@/Users/brucew/Projects/apple-music-sample-rate-switcher/.build/arm64-apple-macosx/release/AppleMusicSampleRateSwitcher.build/sources","-I","/Users/brucew/Projects/apple-music-sample-rate-switcher/.build/arm64-apple-macosx/release/Modules","-target","arm64-apple-macosx13.0","-whole-module-optimization","-num-threads","10","-serialize-diagnostics","-O","-j10","-DSWIFT_PACKAGE","-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE","-module-cache-path","/Users/brucew/Projects/apple-music-sample-rate-switcher/.build/arm64-apple-macosx/release/ModuleCache","-parseable-output","-Xfrontend","-entry-point-function-name","-Xfrontend","AppleMusicSampleRateSwitcher_main","-color-diagnostics","-swift-version","5","-I","/Library/Developer/CommandLineTools/Library/Developer/Frameworks","-L","/Library/Developer/CommandLineTools/Library/Developer/Frameworks","-plugin-path","/Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing","-sdk","/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk","-g","-Xcc","-isysroot","-Xcc","/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk","-Xcc","-fPIC","-Xcc","-g","-package-name","apple_music_sample_rate_switcher"]
+
+  "PackageStructure":
+    tool: package-structure-tool
+    inputs: ["/Users/brucew/Projects/apple-music-sample-rate-switcher/Sources/AppleMusicSampleRateSwitcher/","/Users/brucew/Projects/apple-music-sample-rate-switcher/Package.swift","/Users/brucew/Projects/apple-music-sample-rate-switcher/Package.resolved"]
+    outputs: ["<PackageStructure>"]
+    description: "Planning build"
+    allow-missing-inputs: true
+
