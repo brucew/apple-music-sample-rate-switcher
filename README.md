@@ -44,22 +44,14 @@ Open **Music.app** → `Settings` → `Playback` → set Audio Quality to **Loss
 swift build -c release
 ```
 
+Or use the provided build script:
+```bash
+./build.sh
+```
+
 The binary will be at `.build/release/AppleMusicSampleRateSwitcher`.
 
-### 3. Sign the Binary (Optional)
-
-For basic functionality, you can use ad-hoc signing:
-```bash
-codesign --force --sign - .build/release/AppleMusicSampleRateSwitcher
-```
-
-Or use the provided script with your Developer ID:
-```bash
-chmod +x sign_and_run.sh
-./sign_and_run.sh
-```
-
-### 4. Find Your DAC's UID
+### 3. Find Your DAC's UID
 
 ```bash
 .build/release/AppleMusicSampleRateSwitcher --list-devices
@@ -67,7 +59,7 @@ chmod +x sign_and_run.sh
 
 This lists all audio output devices with their UIDs and supported sample rates.
 
-### 5. Run
+### 4. Run
 
 ```bash
 # Use default output device:
@@ -80,7 +72,7 @@ This lists all audio output devices with their UIDs and supported sample rates.
 .build/release/AppleMusicSampleRateSwitcher --device-uid "YOUR_DAC_UID" --pause-during-switch
 ```
 
-### 6. Test
+### 5. Test
 
 Play a track in Music.app. You should see output like:
 
