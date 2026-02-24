@@ -347,9 +347,10 @@ final class SampleRateSwitcher {
         if state == "Playing" {
             let now = CFAbsoluteTimeGetCurrent()
             
-            // Ignore "Playing" notifications that occur within 500ms of our resume
-            // These are triggered by our own resumePlayback() call
-            if (now - lastResumeTime) < 0.5 {
+            // Ignore "Playing" notifications that occur within 2 seconds of our resume
+            // These are triggered by our own resumePlayback() call, but due to async timing
+            // and notification delivery delays, we need a generous window
+            if (now - lastResumeTime) < 2.0 {
                 return
             }
             
@@ -439,6 +440,8 @@ final class SampleRateSwitcher {
         
         guard let currentDACRate = nominalSampleRate(for: targetDeviceID) else {
             log("ERROR: Could not read current DAC sample rate")
+            // Resume playback if we paused it (can't proceed without DAC rate)
+            resumeIfPaused()
             return
         }
 
@@ -456,6 +459,8 @@ final class SampleRateSwitcher {
             if lastHandledRate != trackRate {
                 log("WARNING: DAC does not support \(trackRate) Hz — keeping \(Int(currentDACRate)) Hz (Source: \(source))")
                 lastHandledRate = trackRate
+                // Resume playback if we paused it (can't switch to unsupported rate)
+                resumeIfPaused()
             }
             return
         }
